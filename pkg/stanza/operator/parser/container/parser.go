@@ -43,6 +43,7 @@ type Parser struct {
 	criLogEmitter           helper.LogEmitter
 	recombineStarted        bool
 	recombineStartOnce      sync.Once
+	criEntriesPool          sync.Pool // *([]*entry.Entry), exclusively owned by one ProcessBatch call
 	timeLayout              string
 	cache                   *lru.Cache[string, map[string]any]
 }
@@ -69,7 +70,19 @@ func (p *Parser) ProcessBatch(ctx context.Context, entries []*entry.Entry) error
 		return nil
 	}
 	var errs []error
-	criEntries := make([]*entry.Entry, 0, len(entries))
+	var criEntries []*entry.Entry
+	var pooledEntries *[]*entry.Entry
+	defer func() {
+		if pooledEntries == nil {
+			return
+		}
+		clear(criEntries)
+		// Do not retain unusually large batches (512 KiB of pointers on 64-bit systems).
+		if cap(criEntries) <= 64*1024 {
+			*pooledEntries = criEntries[:0]
+			p.criEntriesPool.Put(pooledEntries)
+		}
+	}()
 
 	for _, ent := range entries {
 		skip, err := p.Skip(ctx, ent)
@@ -158,6 +171,17 @@ func (p *Parser) ProcessBatch(ctx context.Context, entries []*entry.Entry) error
 			if err = p.handleTimeAndAttributeMappings(ent); err != nil {
 				errs = append(errs, p.HandleEntryErrorWithWrite(ctx, ent, err, write))
 				continue
+			}
+			if pooledEntries == nil {
+				if cached := p.criEntriesPool.Get(); cached != nil {
+					pooledEntries = cached.(*[]*entry.Entry)
+				} else {
+					pooledEntries = new([]*entry.Entry)
+				}
+				criEntries = *pooledEntries
+				if cap(criEntries) < len(entries) {
+					criEntries = make([]*entry.Entry, 0, len(entries))
+				}
 			}
 			criEntries = append(criEntries, ent)
 
