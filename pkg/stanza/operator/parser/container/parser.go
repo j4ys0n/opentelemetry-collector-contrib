@@ -70,18 +70,17 @@ func (p *Parser) ProcessBatch(ctx context.Context, entries []*entry.Entry) error
 		return nil
 	}
 	var errs []error
-	var criEntries []*entry.Entry
 	var pooledEntries *[]*entry.Entry
+	if cached := p.criEntriesPool.Get(); cached != nil {
+		pooledEntries = cached.(*[]*entry.Entry)
+	} else {
+		pooledEntries = new([]*entry.Entry)
+	}
+	criEntries := *pooledEntries
 	defer func() {
-		if pooledEntries == nil {
-			return
-		}
 		clear(criEntries)
-		// Do not retain unusually large batches (512 KiB of pointers on 64-bit systems).
-		if cap(criEntries) <= 64*1024 {
-			*pooledEntries = criEntries[:0]
-			p.criEntriesPool.Put(pooledEntries)
-		}
+		*pooledEntries = criEntries[:0]
+		p.criEntriesPool.Put(pooledEntries)
 	}()
 
 	for _, ent := range entries {
@@ -171,17 +170,6 @@ func (p *Parser) ProcessBatch(ctx context.Context, entries []*entry.Entry) error
 			if err = p.handleTimeAndAttributeMappings(ent); err != nil {
 				errs = append(errs, p.HandleEntryErrorWithWrite(ctx, ent, err, write))
 				continue
-			}
-			if pooledEntries == nil {
-				if cached := p.criEntriesPool.Get(); cached != nil {
-					pooledEntries = cached.(*[]*entry.Entry)
-				} else {
-					pooledEntries = new([]*entry.Entry)
-				}
-				criEntries = *pooledEntries
-				if cap(criEntries) < len(entries) {
-					criEntries = make([]*entry.Entry, 0, len(entries))
-				}
 			}
 			criEntries = append(criEntries, ent)
 

@@ -25,9 +25,6 @@ const DefaultSourceIdentifier = "DefaultSourceIdentifier"
 // Transformer is an operator that combines a field from consecutive log entries into a single
 type Transformer struct {
 	helper.TransformerOperator
-
-	// outputEntries is protected by Mutex and cleared after downstream processing.
-	outputEntries         []*entry.Entry
 	matchFirstLine        bool
 	prog                  *vm.Program
 	maxBatchSize          int
@@ -103,15 +100,7 @@ func (t *Transformer) ProcessBatch(ctx context.Context, entries []*entry.Entry) 
 	t.Lock()
 	defer t.Unlock()
 
-	outputEntries := t.outputEntries[:0]
-	defer func() {
-		clear(outputEntries)
-		if cap(outputEntries) <= 64*1024 {
-			t.outputEntries = outputEntries[:0]
-		} else {
-			t.outputEntries = nil
-		}
-	}()
+	outputEntries := make([]*entry.Entry, 0, len(entries))
 	var errs []error
 
 	// Collect outputs instead of writing immediately
